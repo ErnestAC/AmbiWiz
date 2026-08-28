@@ -19,8 +19,8 @@ from gi.repository import GLib, Gst
 # CONFIGURATION
 # ============================================================
 
-LEFT_LIGHT = "10.0.0.153"
-RIGHT_LIGHT = "10.0.0.50"
+LEFT_LIGHT = "10.0.0.153" ## CHANGE THIS TO YOUR LEFT LIGHT IP
+RIGHT_LIGHT = "10.0.0.50" ## CHANGE THIS TO YOUR RIGHT LIGHT IP
 
 WIZ_PORT = 38899
 
@@ -28,15 +28,14 @@ WIZ_PORT = 38899
 UPDATE_INTERVAL = 0.10
 
 # Higher = smoother/slower transitions.
-SMOOTHING = 0.20
+SMOOTHING = 0.10
 
 # Ignore tiny color changes.
 COLOR_THRESHOLD = 5
 
-# Ignore nearly-black pixels.
+# Ignore black pixels.
 DARK_THRESHOLD = 25
 
-# 2 = do not capture the mouse cursor.
 CURSOR_MODE = 2
 
 # Screen sampling density.
