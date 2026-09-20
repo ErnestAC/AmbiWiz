@@ -1,165 +1,103 @@
 #!/usr/bin/env python3
 
-import concurrent.futures
 import ipaddress
 import json
+import os
 import socket
+import sys
+import time
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-# Change this to match the local network where your WiZ lights
-# are located.
-NETWORK = "192.168.1.0/24"
-
 WIZ_PORT = 38899
+
+OUTPUT_FILE = os.path.expanduser(
+    "~/amb/wiz_lights.json"
+)
+
+# Change this if your LAN is different.
+NETWORK = "192.168.0.0/24"
+
 TIMEOUT = 0.5
-MAX_WORKERS = 50
 
 
 # ============================================================
-# WIZ COMMUNICATION
+# WIZ QUERY
 # ============================================================
 
-def get_system_config(ip):
-    request = {
-        "method": "getSystemConfig",
-        "params": {}
-    }
+QUERY = {
+    "method": "getSystemConfig",
+    "params": {},
+}
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(TIMEOUT)
+
+def query_light(ip):
+    """Ask one IP for its WiZ system configuration."""
+
+    data = json.dumps(
+        QUERY
+    ).encode("utf-8")
+
+    sock = socket.socket(
+        socket.AF_INET,
+        socket.SOCK_DGRAM,
+    )
+
+    sock.settimeout(
+        TIMEOUT
+    )
 
     try:
+
         sock.sendto(
-            json.dumps(request).encode("utf-8"),
-            (str(ip), WIZ_PORT)
+            data,
+            (
+                str(ip),
+                WIZ_PORT,
+            ),
         )
 
-        data, _ = sock.recvfrom(8192)
-        response = json.loads(data.decode("utf-8"))
+        response, _ = sock.recvfrom(
+            4096
+        )
 
-        if response.get("method") == "getSystemConfig":
-            return response.get("result", {})
+        result = json.loads(
+            response.decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+        if (
+            result.get("method")
+            != "getSystemConfig"
+        ):
+            return None
+
+        if "result" not in result:
+            return None
+
+        config = result["result"]
+
+        if "roomId" not in config:
+            return None
+
+        return config
 
     except (
         socket.timeout,
-        socket.error,
+        OSError,
         json.JSONDecodeError,
-        UnicodeDecodeError
     ):
-        pass
+
+        return None
 
     finally:
+
         sock.close()
-
-    return None
-
-
-# ============================================================
-# SCAN
-# ============================================================
-
-def scan_network(network):
-    addresses = list(ipaddress.ip_network(network, strict=False).hosts())
-
-    print(f"Scanning {network}...")
-    print(f"Checking {len(addresses)} addresses...")
-    print()
-
-    found = []
-
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=MAX_WORKERS
-    ) as executor:
-
-        futures = {
-            executor.submit(get_system_config, ip): ip
-            for ip in addresses
-        }
-
-        for future in concurrent.futures.as_completed(futures):
-            ip = futures[future]
-
-            try:
-                result = future.result()
-            except Exception:
-                continue
-
-            if result:
-                found.append({
-                    "ip": str(ip),
-                    **result
-                })
-
-    found.sort(
-        key=lambda item: ipaddress.ip_address(item["ip"])
-    )
-
-    return found
-
-
-# ============================================================
-# DISPLAY
-# ============================================================
-
-def display_lights(lights):
-    if not lights:
-        print("No WiZ lights were found.")
-        return
-
-    print("=" * 100)
-    print(
-        f"{'IP ADDRESS':<16} "
-        f"{'ROOM ID':<14} "
-        f"{'MAC ADDRESS':<18} "
-        f"{'MODEL':<24} "
-        f"{'FIRMWARE':<12}"
-    )
-    print("=" * 100)
-
-    for light in lights:
-        print(
-            f"{light.get('ip', '-'): <16} "
-            f"{str(light.get('roomId', '-')):<14} "
-            f"{light.get('mac', '-'): <18} "
-            f"{light.get('moduleName', '-'): <24} "
-            f"{light.get('fwVersion', '-'): <12}"
-        )
-
-    print("=" * 100)
-    print()
-    print(f"Found {len(lights)} WiZ device(s).")
-
-
-def display_rooms(lights):
-    rooms = {}
-
-    for light in lights:
-        room_id = light.get("roomId", "Unknown")
-
-        rooms.setdefault(room_id, []).append(light)
-
-    print()
-    print("ROOM SUMMARY")
-    print("=" * 60)
-
-    for room_id, room_lights in sorted(
-        rooms.items(),
-        key=lambda item: str(item[0])
-    ):
-        print()
-        print(f"Room ID: {room_id}")
-
-        for light in room_lights:
-            print(
-                f"  {light.get('ip', '-')} "
-                f"({light.get('moduleName', '-')})"
-            )
-
-    print()
 
 
 # ============================================================
@@ -167,10 +105,211 @@ def display_rooms(lights):
 # ============================================================
 
 def main():
-    lights = scan_network(NETWORK)
 
-    display_lights(lights)
-    display_rooms(lights)
+    print()
+    print("==========================================")
+    print(" WiZ Light Discovery")
+    print("==========================================")
+    print()
+
+    print(
+        f"Scanning {NETWORK}..."
+    )
+
+    print()
+
+    network = ipaddress.ip_network(
+        NETWORK,
+        strict=False,
+    )
+
+    lights = []
+
+    total = network.num_addresses
+
+    for index, ip in enumerate(
+        network.hosts(),
+        start=1,
+    ):
+
+        print(
+            f"\rChecking {ip} "
+            f"({index}/{total - 2})",
+            end="",
+            flush=True,
+        )
+
+        config = query_light(
+            ip
+        )
+
+        if config is None:
+            continue
+
+        light = {
+            "ip": str(ip),
+
+            "mac": config.get(
+                "mac"
+            ),
+
+            "room_id": config.get(
+                "roomId"
+            ),
+
+            "home_id": config.get(
+                "homeId"
+            ),
+
+            "module": config.get(
+                "moduleName"
+            ),
+
+            "firmware": config.get(
+                "fwVersion"
+            ),
+
+            "region": config.get(
+                "rgn"
+            ),
+        }
+
+        lights.append(
+            light
+        )
+
+    print()
+    print()
+
+    # Sort consistently by room and IP.
+    lights.sort(
+        key=lambda light: (
+            str(light["room_id"]),
+            tuple(
+                int(part)
+                for part in light["ip"].split(".")
+            ),
+        )
+    )
+
+    # --------------------------------------------------------
+    # Build room groups.
+    # --------------------------------------------------------
+
+    rooms = {}
+
+    for light in lights:
+
+        room_id = str(
+            light["room_id"]
+        )
+
+        if room_id not in rooms:
+
+            rooms[room_id] = {
+                "room_id": int(
+                    light["room_id"]
+                ),
+
+                # WiZ's local getSystemConfig API does not
+                # provide the human-readable room name.
+                #
+                # You can fill this in manually later.
+                "name": "",
+
+                "lights": [],
+            }
+
+        rooms[room_id][
+            "lights"
+        ].append(
+            light
+        )
+
+    # --------------------------------------------------------
+    # Build final JSON.
+    # --------------------------------------------------------
+
+    output = {
+        "generated": time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+
+        "network": NETWORK,
+
+        "lights": lights,
+
+        "rooms": list(
+            rooms.values()
+        ),
+    }
+
+    with open(
+        OUTPUT_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
+
+        json.dump(
+            output,
+            file,
+            indent=4,
+        )
+
+        file.write(
+            "\n"
+        )
+
+    # --------------------------------------------------------
+    # Display results.
+    # --------------------------------------------------------
+
+    print(
+        f"Found {len(lights)} WiZ device(s)."
+    )
+
+    print()
+
+    if not rooms:
+
+        print(
+            "No WiZ lights were found."
+        )
+
+        return
+
+    print(
+        "Rooms:"
+    )
+
+    print()
+
+    for room_id, room in rooms.items():
+
+        print(
+            f"Room {room_id}: "
+            f"{len(room['lights'])} light(s)"
+        )
+
+        for light in room["lights"]:
+
+            print(
+                f"    {light['ip']}  "
+                f"{light['module']}  "
+                f"MAC={light['mac']}"
+            )
+
+        print()
+
+    print(
+        f"JSON written to:"
+    )
+
+    print(
+        f"  {OUTPUT_FILE}"
+    )
+
+    print()
 
 
 if __name__ == "__main__":

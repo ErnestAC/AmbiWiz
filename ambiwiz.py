@@ -24,15 +24,15 @@ from gi.repository import GLib, Gst
 # WIZ LIGHTS
 # ------------------------------------------------------------
 
-# These lights form ONE illumination zone.
-#
-# Both lights always receive the exact same RGB value.
-#
-# Change these IP addresses if necessary.
-WIZ_LIGHTS = [
-    "10.0.0.153",
-    "10.0.0.50",
-]
+WIZ_INVENTORY_FILE = os.path.expanduser(
+    "wiz_lights.json"
+)
+
+# Select the WiZ room to control. - Use wiz_scanner.py to find the room ID.
+
+WIZ_ROOM_ID = 9999999 # Living Room
+
+WIZ_LIGHTS = []
 
 WIZ_PORT = 38899
 
@@ -101,7 +101,7 @@ BLACK_SCREEN_THRESHOLD = 8
 # ------------------------------------------------------------
 
 # 2 = do not capture the mouse cursor.
-CURSOR_MODE = 2
+CURSOR_MODE = 1
 
 # Screen sampling density.
 SAMPLE_COLUMNS = 32
@@ -1237,10 +1237,10 @@ def main():
 
     print()
     print("==========================================")
-    print(" AmbiWiz")
+    print(" AmbiWiz Enhanced")
     print("==========================================")
     print()
-
+    load_wiz_room()
     print(
         "Illumination zone:"
     )
@@ -1475,6 +1475,77 @@ def main():
             "AmbiWiz stopped."
         )
 
+def load_wiz_room():
+    """
+    Load the WiZ inventory and select all lights belonging
+    to the configured room.
+    """
+
+    global WIZ_LIGHTS
+
+    if not os.path.isfile(WIZ_INVENTORY_FILE):
+        print()
+        print("ERROR: WiZ inventory file not found:")
+        print(f"  {WIZ_INVENTORY_FILE}")
+        print()
+        print("Run wiz_scanner.py first.")
+        sys.exit(1)
+
+    try:
+        with open(
+            WIZ_INVENTORY_FILE,
+            "r",
+            encoding="utf-8",
+        ) as f:
+            inventory = json.load(f)
+
+    except Exception as e:
+        print()
+        print("ERROR: Could not read WiZ inventory:")
+        print(f"  {e}")
+        sys.exit(1)
+
+    selected = []
+
+    for light in inventory.get("lights", []):
+        try:
+            light_room_id = int(
+                light.get("room_id")
+            )
+        except (TypeError, ValueError):
+            continue
+
+        if light_room_id != int(WIZ_ROOM_ID):
+            continue
+
+        ip = light.get("ip")
+
+        if ip and ip not in selected:
+            selected.append(ip)
+
+    if not selected:
+        print()
+        print(
+            f"ERROR: No lights found in WiZ room "
+            f"{WIZ_ROOM_ID}."
+        )
+        print(
+            f"Inventory: {WIZ_INVENTORY_FILE}"
+        )
+        sys.exit(1)
+
+    WIZ_LIGHTS = selected
+
+    print()
+    print("WiZ room selection")
+    print("-------------------")
+    print(f"Room ID: {WIZ_ROOM_ID}")
+    print("Lights:")
+
+    for ip in WIZ_LIGHTS:
+        print(f"  {ip}")
+
+    print()
 
 # ============================================================
 # ENTRY POINT
