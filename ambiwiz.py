@@ -13,7 +13,8 @@ import dbus.mainloop.glib
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import GLib, Gst
+gi.require_version("GstVideo", "1.0")
+from gi.repository import GLib, Gst, GstVideo
 
 
 # ============================================================
@@ -103,7 +104,24 @@ BLACK_SCREEN_THRESHOLD = 8
 # 2 = do not capture the mouse cursor.
 CURSOR_MODE = 1
 
-# Screen sampling density.
+# Capture pipeline.
+#
+# "auto" = GPU pipeline, falls back to CPU if it fails.
+#          Recommended: needed for fullscreen apps.
+# "gpu"  = GPU pipeline only (OpenGL + DMA-BUF).
+# "cpu"  = CPU pipeline only. Fullscreen windows may freeze
+#          the lights until they leave fullscreen.
+CAPTURE_MODE = "auto"
+
+# Seconds to wait before rebuilding a failed pipeline.
+RESTART_DELAY = 1.0
+
+# Report a stream that sends no frames for this many
+# seconds. A still screen also sends no frames.
+STALL_WARNING = 10.0
+
+# Screen sampling density. The screen is scaled down to
+# this many pixels and each one is used.
 SAMPLE_COLUMNS = 32
 SAMPLE_ROWS = 18
 
@@ -309,38 +327,32 @@ def calculate_stream_color(stream):
     Calculate the average visible RGB color of one captured
     screen stream.
 
+    GStreamer has already scaled the frame down to
+    SAMPLE_COLUMNS x SAMPLE_ROWS, so every pixel is already
+    an average of a screen region. Each pixel is used here.
+
     The frame is copied while holding the stream lock and
     analyzed afterward.
     """
 
     with stream["lock"]:
 
-        frame = stream.get(
+        data = stream.get(
             "frame"
         )
 
-        if frame is None:
+        if data is None:
             return None
 
         width = stream["width"]
         height = stream["height"]
-
-        data = bytes(
-            frame
-        )
+        stride = stream["stride"]
 
     if width <= 0 or height <= 0:
         return None
 
-    step_x = max(
-        1,
-        width // SAMPLE_COLUMNS,
-    )
-
-    step_y = max(
-        1,
-        height // SAMPLE_ROWS,
-    )
+    if stride <= 0:
+        stride = width * 4
 
     total_r = 0.0
     total_g = 0.0
@@ -348,24 +360,15 @@ def calculate_stream_color(stream):
 
     count = 0
 
-    stride = width * 4
     data_length = len(data)
 
-    for y in range(
-        0,
-        height,
-        step_y,
-    ):
+    for y in range(height):
 
         row_offset = (
             y * stride
         )
 
-        for x in range(
-            0,
-            width,
-            step_x,
-        ):
+        for x in range(width):
 
             offset = (
                 row_offset
@@ -376,7 +379,7 @@ def calculate_stream_color(stream):
                 offset + 3
                 >= data_length
             ):
-                continue
+                break
 
             r = data[offset]
             g = data[offset + 1]
@@ -408,7 +411,6 @@ def calculate_stream_color(stream):
         total_g / count,
         total_b / count,
     )
-
 
 def calculate_ambient_color():
     """
@@ -664,8 +666,9 @@ def update_lights():
 def on_new_sample(
     sink,
     stream,
+    generation,
 ):
-    """Receive the latest GStreamer frame."""
+    """Receive the latest (already downscaled) frame."""
 
     sample = sink.emit(
         "pull-sample"
@@ -675,21 +678,22 @@ def on_new_sample(
 
         return Gst.FlowReturn.ERROR
 
+    # Ignore frames from a pipeline that is being replaced.
+    if generation != stream["generation"]:
+
+        return Gst.FlowReturn.OK
+
     buffer = sample.get_buffer()
 
     caps = sample.get_caps()
 
-    structure = caps.get_structure(
-        0
+    info = GstVideo.VideoInfo.new_from_caps(
+        caps
     )
 
-    width = structure.get_value(
-        "width"
-    )
+    if info is None:
 
-    height = structure.get_value(
-        "height"
-    )
+        return Gst.FlowReturn.ERROR
 
     success, map_info = buffer.map(
         Gst.MapFlags.READ
@@ -705,17 +709,21 @@ def on_new_sample(
             map_info.data
         )
 
-        with stream["lock"]:
-
-            stream["frame"] = frame
-            stream["width"] = width
-            stream["height"] = height
-
     finally:
 
         buffer.unmap(
             map_info
         )
+
+    with stream["lock"]:
+
+        stream["frame"] = frame
+        stream["width"] = info.width
+        stream["height"] = info.height
+        stream["stride"] = info.stride[0]
+
+        stream["frame_count"] += 1
+        stream["last_frame_time"] = time.monotonic()
 
     return Gst.FlowReturn.OK
 
@@ -724,186 +732,113 @@ def on_new_sample(
 # GSTREAMER PIPELINE
 # ============================================================
 
-def create_stream(
-    pipewire_fd,
-    node_id,
-    position,
-    size,
-):
+def pipeline_description(mode):
     """
-    Create and start one PipeWire → GStreamer pipeline.
+    Return the GStreamer pipeline for a capture mode.
+
+    gpu:
+        Accepts DMA-BUF (GPU) frames from PipeWire, scales
+        them down on the GPU and downloads only a tiny image.
+
+        GNOME sends fullscreen windows straight to the
+        display ("direct scanout"). While that happens,
+        screen capture often only produces GPU buffers, so a
+        CPU-only pipeline gets no new frames until the window
+        leaves fullscreen.
+
+    cpu:
+        Memory-mapped frames only, scaled on the CPU.
+        Fallback for systems without working OpenGL.
     """
 
-    pipeline = Gst.Pipeline.new(
-        None
+    size = (
+        f"width={SAMPLE_COLUMNS},"
+        f"height={SAMPLE_ROWS}"
     )
 
-    source = Gst.ElementFactory.make(
-        "pipewiresrc",
-        None,
-    )
+    if mode == "gpu":
 
-    convert = Gst.ElementFactory.make(
-        "videoconvert",
-        None,
-    )
-
-    capsfilter = Gst.ElementFactory.make(
-        "capsfilter",
-        None,
-    )
-
-    sink = Gst.ElementFactory.make(
-        "appsink",
-        None,
-    )
-
-    if not all([
-        pipeline,
-        source,
-        convert,
-        capsfilter,
-        sink,
-    ]):
-
-        raise RuntimeError(
-            "Could not create GStreamer elements."
+        return (
+            "pipewiresrc name=src ! "
+            "glupload ! "
+            "glcolorconvert ! "
+            "glcolorscale ! "
+            "video/x-raw(memory:GLMemory),"
+            f"format=RGBA,{size} ! "
+            "gldownload ! "
+            "video/x-raw,format=RGBA ! "
+            "appsink name=sink"
         )
 
-    # Duplicate the PipeWire descriptor.
-    fd = os.dup(
-        pipewire_fd
+    return (
+        "pipewiresrc name=src ! "
+        "videoconvertscale add-borders=false ! "
+        f"video/x-raw,format=RGBA,{size} ! "
+        "appsink name=sink"
     )
 
+
+def build_pipeline(stream, mode):
+    """Create and start the pipeline for one stream."""
+
+    stream["generation"] += 1
+    generation = stream["generation"]
+
+    pipeline = Gst.parse_launch(
+        pipeline_description(mode)
+    )
+
+    source = pipeline.get_by_name(
+        "src"
+    )
+
+    sink = pipeline.get_by_name(
+        "sink"
+    )
+
+    # Duplicate the PipeWire descriptor. Every pipeline
+    # gets its own copy, so rebuilding a pipeline never
+    # closes the shared descriptor.
     source.set_property(
         "fd",
-        fd,
+        os.dup(stream["pipewire_fd"]),
     )
 
     source.set_property(
         "path",
-        str(node_id),
+        str(stream["node_id"]),
     )
 
-    capsfilter.set_property(
-        "caps",
-        Gst.Caps.from_string(
-            "video/x-raw,format=RGBA"
-        ),
-    )
-
-    sink.set_property(
-        "emit-signals",
-        True,
-    )
-
-    sink.set_property(
-        "max-buffers",
-        1,
-    )
-
-    sink.set_property(
-        "drop",
-        True,
-    )
-
-    sink.set_property(
-        "sync",
-        False,
-    )
-
-    stream = {
-        "pipeline": pipeline,
-
-        "lock": threading.Lock(),
-
-        "frame": None,
-
-        "width": 0,
-        "height": 0,
-
-        "x": 0,
-        "y": 0,
-
-        "position_width": 0,
-        "position_height": 0,
-    }
-
-    if position is not None:
-
-        try:
-
-            stream["x"] = int(
-                position[0]
-            )
-
-            stream["y"] = int(
-                position[1]
-            )
-
-        except Exception:
-            pass
-
-    if size is not None:
-
-        try:
-
-            stream["position_width"] = int(
-                size[0]
-            )
-
-            stream["position_height"] = int(
-                size[1]
-            )
-
-        except Exception:
-            pass
+    sink.set_property("emit-signals", True)
+    sink.set_property("max-buffers", 1)
+    sink.set_property("drop", True)
+    sink.set_property("sync", False)
 
     sink.connect(
         "new-sample",
         on_new_sample,
         stream,
+        generation,
     )
 
-    pipeline.add(
-        source
+    bus = pipeline.get_bus()
+
+    bus.add_signal_watch()
+
+    bus.connect(
+        "message",
+        on_bus_message,
+        stream,
+        generation,
     )
 
-    pipeline.add(
-        convert
-    )
+    stream["pipeline"] = pipeline
+    stream["mode"] = mode
+    stream["started_time"] = time.monotonic()
 
-    pipeline.add(
-        capsfilter
-    )
+    with stream["lock"]:
 
-    pipeline.add(
-        sink
-    )
-
-    if not source.link(
-        convert
-    ):
-
-        raise RuntimeError(
-            "Could not link PipeWire source."
-        )
-
-    if not convert.link(
-        capsfilter
-    ):
-
-        raise RuntimeError(
-            "Could not link videoconvert."
-        )
-
-    if not capsfilter.link(
-        sink
-    ):
-
-        raise RuntimeError(
-            "Could not link capsfilter."
-        )
+        stream["frame_count"] = 0
 
     result = pipeline.set_state(
         Gst.State.PLAYING
@@ -915,11 +850,301 @@ def create_stream(
     ):
 
         raise RuntimeError(
-            "Could not start GStreamer pipeline."
+            f"Could not start {mode} pipeline."
+        )
+
+    print(
+        f"Stream {stream['node_id']}: "
+        f"capturing with {mode.upper()} pipeline.",
+        flush=True,
+    )
+
+
+def teardown_pipeline(stream):
+    """Stop and release a stream's current pipeline."""
+
+    pipeline = stream.get(
+        "pipeline"
+    )
+
+    if pipeline is None:
+        return
+
+    stream["pipeline"] = None
+
+    try:
+        pipeline.get_bus().remove_signal_watch()
+    except Exception:
+        pass
+
+    try:
+        pipeline.set_state(
+            Gst.State.NULL
+        )
+    except Exception:
+        pass
+
+
+def restart_stream(stream, mode):
+    """Rebuild a stream's pipeline (runs on the main loop)."""
+
+    stream["restart_pending"] = False
+
+    teardown_pipeline(
+        stream
+    )
+
+    try:
+
+        build_pipeline(
+            stream,
+            mode,
+        )
+
+    except Exception as error:
+
+        print(
+            f"Stream {stream['node_id']}: "
+            f"restart failed: {error}",
+            flush=True,
+        )
+
+        schedule_restart(
+            stream,
+            "cpu",
+            delay=RESTART_DELAY * 2,
+        )
+
+    # One-shot GLib timeout.
+    return False
+
+
+def schedule_restart(stream, mode, delay=None):
+    """Rebuild a stream's pipeline after a short delay."""
+
+    if stream["restart_pending"]:
+        return
+
+    stream["restart_pending"] = True
+
+    # Stop the stream's current generation from
+    # delivering frames or bus messages.
+    stream["generation"] += 1
+
+    GLib.timeout_add(
+        int(
+            (delay or RESTART_DELAY)
+            * 1000
+        ),
+        restart_stream,
+        stream,
+        mode,
+    )
+
+
+def on_bus_message(bus, message, stream, generation):
+    """Handle pipeline errors and end-of-stream."""
+
+    if generation != stream["generation"]:
+        return
+
+    if message.type == Gst.MessageType.ERROR:
+
+        error, debug = message.parse_error()
+
+        print(
+            f"Stream {stream['node_id']} "
+            f"({stream['mode']}) error: "
+            f"{error.message}",
+            flush=True,
+        )
+
+        if debug:
+            print(
+                f"  {debug.splitlines()[0]}",
+                flush=True,
+            )
+
+        with stream["lock"]:
+            frames = stream["frame_count"]
+
+        # The GPU pipeline failed before showing any frame:
+        # OpenGL / DMA-BUF probably does not work here.
+        # Fall back to the CPU pipeline for this stream.
+        if (
+            stream["mode"] == "gpu"
+            and frames == 0
+            and CAPTURE_MODE == "auto"
+        ):
+
+            print(
+                f"Stream {stream['node_id']}: "
+                "falling back to CPU capture.",
+                flush=True,
+            )
+
+            schedule_restart(stream, "cpu")
+
+        else:
+
+            schedule_restart(stream, stream["mode"])
+
+    elif message.type == Gst.MessageType.EOS:
+
+        print(
+            f"Stream {stream['node_id']}: "
+            "end of stream, restarting.",
+            flush=True,
+        )
+
+        schedule_restart(stream, stream["mode"])
+
+    elif message.type == Gst.MessageType.WARNING:
+
+        warning, _ = message.parse_warning()
+
+        print(
+            f"Stream {stream['node_id']} warning: "
+            f"{warning.message}",
+            flush=True,
+        )
+
+
+def check_streams():
+    """
+    Report streams that stop delivering frames.
+
+    GNOME only sends a frame when the screen changes, so a
+    still desktop can be quiet for a long time. A quiet stream
+    is reported, but not restarted.
+    """
+
+    now = time.monotonic()
+
+    with streams_lock:
+        current_streams = tuple(streams)
+
+    for stream in current_streams:
+
+        with stream["lock"]:
+            last = stream["last_frame_time"]
+
+        since = stream.get("started_time") or now
+
+        if last is not None:
+            since = max(since, last)
+
+        idle = now - since
+
+        if idle >= STALL_WARNING and not stream["stalled"]:
+
+            stream["stalled"] = True
+
+            print(
+                f"Stream {stream['node_id']} "
+                f"({stream['mode']}): no new frames "
+                f"for {idle:.0f}s.",
+                flush=True,
+            )
+
+        elif idle < STALL_WARNING and stream["stalled"]:
+
+            stream["stalled"] = False
+
+            print(
+                f"Stream {stream['node_id']}: "
+                "frames are arriving again.",
+                flush=True,
+            )
+
+    return True
+
+
+def create_stream(
+    pipewire_fd,
+    node_id,
+    position,
+    size,
+):
+    """
+    Create and start one PipeWire → GStreamer stream.
+    """
+
+    stream = {
+        "pipeline": None,
+        "pipewire_fd": pipewire_fd,
+        "node_id": node_id,
+        "mode": None,
+        "generation": 0,
+        "restart_pending": False,
+        "started_time": None,
+        "stalled": False,
+
+        "lock": threading.Lock(),
+
+        "frame": None,
+        "frame_count": 0,
+        "last_frame_time": None,
+
+        "width": 0,
+        "height": 0,
+        "stride": 0,
+
+        "x": 0,
+        "y": 0,
+
+        "position_width": 0,
+        "position_height": 0,
+    }
+
+    if position is not None:
+
+        try:
+            stream["x"] = int(position[0])
+            stream["y"] = int(position[1])
+        except Exception:
+            pass
+
+    if size is not None:
+
+        try:
+            stream["position_width"] = int(size[0])
+            stream["position_height"] = int(size[1])
+        except Exception:
+            pass
+
+    mode = (
+        "cpu"
+        if CAPTURE_MODE == "cpu"
+        else "gpu"
+    )
+
+    try:
+
+        build_pipeline(
+            stream,
+            mode,
+        )
+
+    except Exception as error:
+
+        if mode == "cpu" or CAPTURE_MODE != "auto":
+            raise
+
+        print(
+            f"Stream {node_id}: GPU pipeline unavailable "
+            f"({error}), using CPU capture.",
+            flush=True,
+        )
+
+        teardown_pipeline(stream)
+
+        build_pipeline(
+            stream,
+            "cpu",
         )
 
     return stream
-
 
 # ============================================================
 # PORTAL REQUEST
@@ -1206,14 +1431,9 @@ def stop_streams():
 
     for stream in current_streams:
 
-        try:
-
-            stream["pipeline"].set_state(
-                Gst.State.NULL
-            )
-
-        except Exception:
-            pass
+        teardown_pipeline(
+            stream
+        )
 
 
 def close_fd(fd):
@@ -1435,6 +1655,11 @@ def main():
             * 1000
         ),
         update_lights,
+    )
+
+    GLib.timeout_add_seconds(
+        2,
+        check_streams,
     )
 
     try:
