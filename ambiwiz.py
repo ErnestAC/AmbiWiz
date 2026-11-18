@@ -25,8 +25,10 @@ from gi.repository import GLib, Gst, GstVideo
 # WIZ LIGHTS
 # ------------------------------------------------------------
 
-WIZ_INVENTORY_FILE = os.path.expanduser(
-    "wiz_lights.json"
+# Written by wiz_scanner.py, next to this script.
+WIZ_INVENTORY_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "wiz_lights.json",
 )
 
 # Select the WiZ room to control. - Use wiz_scanner.py to find the room ID.
@@ -101,7 +103,10 @@ BLACK_SCREEN_THRESHOLD = 8
 # SCREEN CAPTURE
 # ------------------------------------------------------------
 
-# 2 = do not capture the mouse cursor.
+# Mouse cursor in the captured image.
+#
+# 1 = hidden (recommended: the cursor never tints the lights)
+# 2 = drawn into the image
 CURSOR_MODE = 1
 
 # Capture pipeline.
@@ -1474,7 +1479,7 @@ def main():
     print()
 
     print(
-        "Both lights will always receive "
+        "Every light in the room receives "
         "the same RGB value."
     )
 

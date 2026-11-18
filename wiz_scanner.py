@@ -14,8 +14,10 @@ import time
 
 WIZ_PORT = 38899
 
-OUTPUT_FILE = os.path.expanduser(
-    "~/amb/wiz_lights.json"
+# Written next to this script, where ambiwiz.py reads it.
+OUTPUT_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "wiz_lights.json",
 )
 
 # Change this if your LAN is different.

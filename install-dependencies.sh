@@ -43,9 +43,11 @@ apt install -y \
     python3-dbus \
     python3-gi \
     gir1.2-gstreamer-1.0 \
+    gir1.2-gst-plugins-base-1.0 \
     gstreamer1.0-pipewire \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
+    gstreamer1.0-gl \
     pipewire \
     wireplumber \
     xdg-desktop-portal \
@@ -72,7 +74,7 @@ fi
 
 echo "Checking GStreamer Python bindings..."
 
-if python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst" 2>/dev/null; then
+if python3 -c "import gi; gi.require_version('Gst', '1.0'); gi.require_version('GstVideo', '1.0'); from gi.repository import Gst, GstVideo" 2>/dev/null; then
     echo "  OK: GStreamer Python bindings"
 else
     echo "  ERROR: GStreamer Python bindings are not available."
@@ -96,10 +98,17 @@ check_gst_element() {
     fi
 }
 
-check_gst_element pipewiresrc
-check_gst_element videoconvert
-check_gst_element capsfilter
-check_gst_element appsink
+# CPU capture pipeline (always required).
+check_gst_element pipewiresrc || exit 1
+check_gst_element videoconvertscale || exit 1
+check_gst_element appsink || exit 1
+
+# GPU capture pipeline (needed for fullscreen windows).
+# AmbiWiz still runs without these, using CPU capture.
+for element in glupload glcolorconvert glcolorscale gldownload; do
+    check_gst_element "$element" || \
+        echo "  WARNING: Without $element, fullscreen windows may freeze the lights."
+done
 
 # ------------------------------------------------------------
 # Check PipeWire
@@ -158,9 +167,11 @@ echo " Dependencies installed successfully!"
 echo "=========================================="
 echo
 
-echo "The AmbiWiz script can now be run with:"
+echo "Next steps:"
 echo
-echo "  ./ambiwiz.py"
+echo "  1. Find your lights:   python3 wiz_scanner.py"
+echo "  2. Set WIZ_ROOM_ID in ambiwiz.py"
+echo "  3. Start AmbiWiz:      python3 ambiwiz.py"
 echo
 
 echo "If this is the first installation, log out and"

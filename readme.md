@@ -1,1090 +1,341 @@
 # AmbiWiz
 
-AmbiWiz is a lightweight ambient lighting application for Linux desktops running GNOME on Wayland.
+AmbiWiz turns WiZ smart lights into ambient lighting for a Linux desktop. It watches what is on your screen and sets every light in one WiZ room to the screen's main color, many times per second.
 
-It captures the desktop using the GNOME ScreenCast portal, receives the captured frames through PipeWire and GStreamer, analyzes the colors displayed on the screen, and sends RGB commands directly to WiZ smart lights over the local network.
+Everything runs locally. Screen frames never leave your computer, and the lights are controlled directly over your home network with no cloud account.
 
-The goal is simple: make the lights around your display react to what is currently being shown on the screen without relying on a cloud service or a separate lighting application.
+It works with normal windows and with fullscreen apps such as games and videos.
 
-## Features
+## Requirements
 
-* Designed for GNOME on Wayland
-* Uses the GNOME ScreenCast portal for desktop capture
-* Uses PipeWire for screen frame delivery
-* Uses GStreamer for video processing
-* Supports multiple captured displays
-* Automatically determines the left and right sides of the desktop
-* Samples the screen instead of processing every pixel
-* Ignores nearly-black pixels
-* Smooths color transitions
-* Avoids sending unnecessary WiZ commands
-* Communicates directly with WiZ lights over the local network
-* No cloud service required
-* Runs continuously until stopped
+* Linux with **GNOME on Wayland** (X11 is not supported)
+* PipeWire and the GNOME desktop portal (standard on recent Ubuntu and Fedora)
+* Python 3 and GStreamer (installed by the script below)
+* WiZ color lights on the same local network as the computer
 
-## How It Works
+Ubuntu and other Debian-based systems are the main target. The installer uses `apt`.
 
-AmbiWiz follows this basic pipeline:
-
-```text
-GNOME Desktop
-     |
-     v
-GNOME ScreenCast Portal
-     |
-     v
-   PipeWire
-     |
-     v
-  GStreamer
-     |
-     v
-RGBA Screen Frames
-     |
-     v
-Color Sampling
-     |
-     +----------------+
-     |                |
-     v                v
- Left Side       Right Side
-     |                |
-     v                v
- Color Average    Color Average
-     |                |
-     +-------+--------+
-             |
-             v
-       Color Smoothing
-             |
-             v
-         WiZ UDP API
-             |
-             v
-        WiZ Smart Lights
-```
-
-The desktop is divided into left and right regions based on the horizontal bounds of the captured screens.
-
-Each captured stream is analyzed and assigned to either the left or right side of the desktop. The colors from streams belonging to the same side are averaged together.
-
-The resulting colors are then smoothed before being sent to the lights.
-
----
-
-# Requirements
-
-AmbiWiz is intended for Linux systems using:
-
-* GNOME
-* Wayland
-* PipeWire
-* WirePlumber
-* GNOME ScreenCast
-* GStreamer
-* Python 3
-
-Ubuntu and Debian-based systems are currently the primary target.
-
-The application is not designed for X11 screen capture.
-
----
-
-# Installation
-
-The project includes an installation script that installs the required system dependencies and verifies that the important components are available.
-
-Clone or copy the project to your computer, then enter the project directory:
+## Quick start
 
 ```bash
 cd AmbiWiz
-```
 
-Make the installer executable:
-
-```bash
+# 1. Install the system packages
 chmod +x install-dependencies.sh
-```
-
-Run the installer:
-
-```bash
 sudo ./install-dependencies.sh
-```
 
-The installer will:
+# 2. Set your network in wiz_scanner.py (see below), then find your lights
+python3 wiz_scanner.py
 
-1. Update the system package lists.
-2. Install Python 3.
-3. Install Python D-Bus bindings.
-4. Install Python GObject/GStreamer bindings.
-5. Install GStreamer.
-6. Install the GStreamer PipeWire plugin.
-7. Install GStreamer Base and Good plugins.
-8. Install PipeWire.
-9. Install WirePlumber.
-10. Install the XDG desktop portal.
-11. Install the GNOME desktop portal backend.
-12. Verify the required Python modules.
-13. Verify the required GStreamer elements.
-
-The installer checks for:
-
-```text
-pipewiresrc
-videoconvert
-capsfilter
-appsink
-```
-
-before reporting a successful installation.
-
----
-
-# Dependencies
-
-The installation script installs the following packages:
-
-```text
-python3
-python3-dbus
-python3-gi
-gir1.2-gstreamer-1.0
-gstreamer1.0-pipewire
-gstreamer1.0-plugins-base
-gstreamer1.0-plugins-good
-pipewire
-wireplumber
-xdg-desktop-portal
-xdg-desktop-portal-gnome
-```
-
-No Python packages need to be installed with `pip`.
-
-The project uses the Python modules provided by the operating system packages.
-
----
-
-# Checking the Installation
-
-After running the installer, check that the desktop session is using Wayland:
-
-```bash
-echo "$XDG_SESSION_TYPE"
-```
-
-The expected result is:
-
-```text
-wayland
-```
-
-You can also verify the GStreamer PipeWire source:
-
-```bash
-gst-inspect-1.0 pipewiresrc
-```
-
-The command should display information about the `pipewiresrc` element.
-
-The other required GStreamer elements can be checked with:
-
-```bash
-gst-inspect-1.0 videoconvert
-gst-inspect-1.0 capsfilter
-gst-inspect-1.0 appsink
-```
-
-PipeWire can be checked with:
-
-```bash
-systemctl --user status pipewire
-```
-
-WirePlumber can be checked with:
-
-```bash
-systemctl --user status wireplumber
-```
-
-The GNOME desktop portal can be checked with:
-
-```bash
-systemctl --user status xdg-desktop-portal
-```
-
----
-
-# Configuration
-
-The main configuration is located near the beginning of `ambiwiz.py`.
-
-```python
-LEFT_LIGHT = "10.0.0.153"
-RIGHT_LIGHT = "10.0.0.50"
-
-WIZ_PORT = 38899
-
-UPDATE_INTERVAL = 0.10
-
-SMOOTHING = 0.20
-
-COLOR_THRESHOLD = 5
-
-DARK_THRESHOLD = 25
-
-CURSOR_MODE = 2
-
-SAMPLE_COLUMNS = 32
-SAMPLE_ROWS = 18
-```
-
-## WiZ Light Addresses
-
-Set `LEFT_LIGHT` to the IP address of the WiZ light on the left:
-
-```python
-LEFT_LIGHT = "10.0.0.153"
-```
-
-Set `RIGHT_LIGHT` to the IP address of the WiZ light on the right:
-
-```python
-RIGHT_LIGHT = "10.0.0.50"
-```
-
-The computer and the lights must be able to communicate with each other over the local network.
-
-If your router assigns IP addresses using DHCP, it is recommended to create DHCP reservations for the lights so their addresses do not change.
-
----
-
-# WiZ UDP Port
-
-WiZ local control uses UDP port `38899`.
-
-The default configuration is:
-
-```python
-WIZ_PORT = 38899
-```
-
-There normally should be no reason to change this.
-
----
-
-# Color Updates
-
-## Update Interval
-
-```python
-UPDATE_INTERVAL = 0.10
-```
-
-This controls how frequently AmbiWiz recalculates the screen colors.
-
-The default value of `0.10` results in approximately 10 update cycles per second.
-
-For more frequent updates:
-
-```python
-UPDATE_INTERVAL = 0.05
-```
-
-For less frequent updates:
-
-```python
-UPDATE_INTERVAL = 0.20
-```
-
-Lower values can increase CPU usage and network traffic.
-
----
-
-# Color Smoothing
-
-```python
-SMOOTHING = 0.20
-```
-
-Smoothing controls how quickly the current color moves toward the newly calculated screen color.
-
-A higher value produces faster reactions:
-
-```python
-SMOOTHING = 0.40
-```
-
-A lower value produces slower, smoother transitions:
-
-```python
-SMOOTHING = 0.10
-```
-
-The default value of `0.20` is intended to provide a balance between responsiveness and smooth transitions.
-
----
-
-# Color Threshold
-
-```python
-COLOR_THRESHOLD = 5
-```
-
-AmbiWiz does not send a new WiZ command for every tiny color change.
-
-A new command is sent only when at least one RGB channel has changed by the configured threshold.
-
-For example:
-
-```text
-Previous: (120, 80, 50)
-Current:  (122, 82, 51)
-```
-
-would normally be ignored with a threshold of `5`.
-
-This reduces unnecessary network traffic and prevents constant small adjustments.
-
-A lower value makes the lights more responsive:
-
-```python
-COLOR_THRESHOLD = 2
-```
-
-A higher value makes them more stable:
-
-```python
-COLOR_THRESHOLD = 10
-```
-
----
-
-# Dark Pixel Filtering
-
-```python
-DARK_THRESHOLD = 25
-```
-
-Very dark pixels are ignored when calculating the average screen color.
-
-AmbiWiz calculates:
-
-```text
-R + G + B
-```
-
-and ignores the pixel when the result is below the configured threshold.
-
-This is particularly useful when watching movies or videos with black borders.
-
-If too much of the screen is being ignored, the threshold can be lowered:
-
-```python
-DARK_THRESHOLD = 10
-```
-
----
-
-# Cursor Capture
-
-```python
-CURSOR_MODE = 2
-```
-
-This value is passed to the GNOME ScreenCast portal.
-
-The current configuration tells the portal not to include the mouse cursor in the captured image.
-
----
-
-# Screen Sampling
-
-AmbiWiz does not inspect every pixel in every frame.
-
-Instead, it samples the screen using:
-
-```python
-SAMPLE_COLUMNS = 32
-SAMPLE_ROWS = 18
-```
-
-This produces an effective sampling grid of approximately:
-
-```text
-32 × 18
-```
-
-This is enough to get a representative screen color without unnecessarily increasing CPU usage.
-
-For more detailed sampling:
-
-```python
-SAMPLE_COLUMNS = 64
-SAMPLE_ROWS = 36
-```
-
-For lower CPU usage:
-
-```python
-SAMPLE_COLUMNS = 16
-SAMPLE_ROWS = 9
-```
-
----
-
-# Running AmbiWiz
-
-Make the Python script executable:
-
-```bash
-chmod +x ambiwiz.py
-```
-
-Then run:
-
-```bash
-./ambiwiz.py
-```
-
-You can also run it directly through Python:
-
-```bash
+# 3. Put your room ID into ambiwiz.py (see below), then start
 python3 ambiwiz.py
 ```
 
-A successful startup should look similar to:
-
-```text
-==========================================
- WiZ Wayland Ambilight
-==========================================
-
-LEFT  → 10.0.0.153
-RIGHT → 10.0.0.50
-
-Capture: GNOME ScreenCast / PipeWire
-
-Portal session created.
-Screen source selected.
-Portal returned 1 screen stream(s).
-
-PipeWire connection opened (fd=...)
-
-Screen stream: node=... position=(...) size=(...)
-
-Ambilight is running.
-Left light : 10.0.0.153
-Right light: 10.0.0.50
-
-Press Ctrl+C to stop.
-```
-
-Press `Ctrl+C` to stop AmbiWiz.
-
----
-
-# Multiple Displays
-
-AmbiWiz supports multiple ScreenCast streams.
-
-When several displays are captured, GNOME provides information about each stream's position and size.
-
-For example:
-
-```text
-Screen stream: node=42 position=(0, 0) size=(1920, 1080)
-Screen stream: node=43 position=(1920, 0) size=(1920, 1080)
-```
-
-AmbiWiz uses these positions to determine the overall desktop boundaries.
-
-The center of the combined desktop is then used to determine whether a screen belongs to the left or right side.
-
-Colors from multiple streams on the same side are averaged together.
-
-This means the application does not need to know the monitor resolution or arrangement in advance.
-
----
-
-# Current Light Behavior
-
-The current version of AmbiWiz intentionally sends the calculated **right-side color to both lights**.
-
-The current behavior is therefore:
-
-```text
-LEFT LIGHT  ← RIGHT RGB
-RIGHT LIGHT ← RIGHT RGB
-```
-
-The left-side color is still calculated and smoothed internally, but the current update logic uses `right_rgb` for both lights.
-
-This is intentional and preserves the current behavior of the script.
-
-## Independent Left and Right Colors
-
-If you want each light to follow its corresponding side of the screen, the update section can be changed to:
-
-```python
-if color_changed(last_left_sent, left_rgb):
-    send_wiz_color(
-        LEFT_LIGHT,
-        left_rgb,
-    )
-
-    last_left_sent = list(left_rgb)
-
-if color_changed(last_right_sent, right_rgb):
-    send_wiz_color(
-        RIGHT_LIGHT,
-        right_rgb,
-    )
-
-    last_right_sent = list(right_rgb)
-```
-
-The resulting behavior would then be:
-
-```text
-LEFT LIGHT  ← LEFT RGB
-RIGHT LIGHT ← RIGHT RGB
-```
-
----
-
-# GStreamer Pipeline
-
-Each captured screen stream is processed using a GStreamer pipeline:
-
-```text
-pipewiresrc
-     |
-     v
-videoconvert
-     |
-     v
-capsfilter
-     |
-     v
-appsink
-```
-
-The captured frames are converted to:
-
-```text
-video/x-raw,format=RGBA
-```
-
-The `appsink` is configured to keep only the most recent frame:
-
-```python
-max-buffers = 1
-drop = True
-```
-
-This prevents old frames from accumulating if color processing falls behind.
-
-AmbiWiz therefore prioritizes processing the current screen rather than attempting to process every frame.
-
----
-
-# Thread Safety
-
-Captured frames are shared between the GStreamer callback and the color analysis code.
-
-Each stream has its own lock.
-
-The latest frame is copied while the lock is held, after which the lock is released before the more expensive color analysis takes place.
-
-This keeps frame capture responsive and prevents the color analysis from unnecessarily blocking GStreamer.
-
----
-
-# WiZ Communication
-
-AmbiWiz communicates directly with WiZ lights using UDP.
-
-A typical command looks like:
-
-```json
-{
-    "method": "setPilot",
-    "params": {
-        "state": true,
-        "r": 255,
-        "g": 0,
-        "b": 0
-    }
-}
-```
-
-The command is sent to:
-
-```text
-LIGHT_IP:38899
-```
-
-For example:
-
-```text
-10.0.0.153:38899
-```
-
-No WiZ cloud account or external server is required for the color commands.
-
----
-
-# Network Requirements
-
-The computer running AmbiWiz and the WiZ lights must be able to communicate over the local network.
-
-For example:
-
-```bash
-ping 10.0.0.153
-```
-
-and:
-
-```bash
-ping 10.0.0.50
-```
-
-should normally succeed if ICMP is enabled on the network.
-
-If the lights are unreachable, verify:
-
-* The IP addresses are correct.
-* The computer and lights are on the same network.
-* The lights are powered on.
-* UDP traffic is not being blocked.
-* The router is not isolating wireless clients from wired clients.
-* The WiZ lights have not received new DHCP addresses.
-
----
-
-# Troubleshooting
-
-## `ERROR starting screen capture`
-
-First check the session type:
-
-```bash
-echo "$XDG_SESSION_TYPE"
-```
-
-It should return:
-
-```text
-wayland
-```
-
-Then check PipeWire:
-
-```bash
-systemctl --user status pipewire
-```
-
-and WirePlumber:
-
-```bash
-systemctl --user status wireplumber
-```
-
-Also check the desktop portal:
-
-```bash
-systemctl --user status xdg-desktop-portal
-```
-
-and:
-
-```bash
-systemctl --user status xdg-desktop-portal-gnome
-```
-
----
-
-## `Could not create GStreamer elements`
-
-Run:
-
-```bash
-gst-inspect-1.0 pipewiresrc
-```
-
-If `pipewiresrc` cannot be found, run the dependency installer again:
-
-```bash
-sudo ./install-dependencies.sh
-```
-
-Also verify:
-
-```bash
-gst-inspect-1.0 videoconvert
-gst-inspect-1.0 capsfilter
-gst-inspect-1.0 appsink
-```
-
----
-
-## Python cannot import `dbus`
-
-Run:
-
-```bash
-python3 -c "import dbus; print('D-Bus OK')"
-```
-
-If this fails, reinstall the package:
-
-```bash
-sudo apt install python3-dbus
-```
-
----
-
-## Python cannot import GStreamer
-
-Run:
-
-```bash
-python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; print('GStreamer OK')"
-```
-
-If this fails:
-
-```bash
-sudo apt install python3-gi gir1.2-gstreamer-1.0
-```
-
----
-
-## The lights do not respond
-
-Verify the configured addresses:
-
-```python
-LEFT_LIGHT = "10.0.0.153"
-RIGHT_LIGHT = "10.0.0.50"
-```
-
-Check basic network connectivity:
-
-```bash
-ping 10.0.0.153
-ping 10.0.0.50
-```
-
-If the addresses are correct but the lights still do not react, check whether UDP port `38899` is being blocked by the local firewall or network configuration.
-
----
-
-## Colors are too slow
-
-Increase:
-
-```python
-SMOOTHING = 0.20
-```
-
-For example:
-
-```python
-SMOOTHING = 0.40
-```
-
-You can also reduce:
-
-```python
-UPDATE_INTERVAL = 0.10
-```
-
-to:
-
-```python
-UPDATE_INTERVAL = 0.05
-```
-
----
-
-## Colors change too aggressively
-
-Reduce the smoothing value:
-
-```python
-SMOOTHING = 0.10
-```
-
-or increase the threshold:
-
-```python
-COLOR_THRESHOLD = 10
-```
-
----
-
-## The lights remain too dark
-
-Try lowering:
-
-```python
-DARK_THRESHOLD = 25
-```
-
-For example:
-
-```python
-DARK_THRESHOLD = 10
-```
-
-This allows darker pixels to contribute to the calculated color.
-
----
-
-## CPU usage is too high
-
-Reduce the sampling resolution:
-
-```python
-SAMPLE_COLUMNS = 16
-SAMPLE_ROWS = 9
-```
-
-You can also increase the update interval:
-
-```python
-UPDATE_INTERVAL = 0.20
-```
-
----
-
-# Running Automatically
-
-AmbiWiz can be run as a user-level systemd service.
-
-This is preferable to running it as a system service because GNOME ScreenCast, D-Bus, PipeWire, and the Wayland session belong to the logged-in desktop user.
-
-Create the service directory:
-
-```bash
-mkdir -p ~/.config/systemd/user
-```
-
-Create:
-
-```text
-~/.config/systemd/user/ambiwiz.service
-```
-
-with:
-
-```ini
-[Unit]
-Description=AmbiWiz Wayland Ambient Lighting
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /path/to/ambiwiz.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-Replace:
-
-```text
-/path/to/ambiwiz.py
-```
-
-with the actual path to the script.
-
-Then reload systemd:
-
-```bash
-systemctl --user daemon-reload
-```
-
-Enable the service:
-
-```bash
-systemctl --user enable ambiwiz.service
-```
-
-Start it:
-
-```bash
-systemctl --user start ambiwiz.service
-```
-
-Check the service:
-
-```bash
-systemctl --user status ambiwiz.service
-```
-
-View live logs:
-
-```bash
-journalctl --user -u ambiwiz.service -f
-```
-
----
-
-# Stopping the Service
-
-To stop AmbiWiz:
-
-```bash
-systemctl --user stop ambiwiz.service
-```
-
-To prevent it from starting automatically:
-
-```bash
-systemctl --user disable ambiwiz.service
-```
-
----
-
-# Privacy
-
-AmbiWiz processes the captured screen locally.
-
-Screen frames are held in memory only long enough to calculate the ambient colors.
-
-The application does not upload screenshots or screen contents to an external service.
-
-Only the resulting RGB commands are sent across the local network to the WiZ lights.
-
----
-
-# Limitations
-
-The current version has several limitations:
-
-* Requires GNOME on Wayland.
-* Requires PipeWire.
-* Requires GStreamer with `pipewiresrc`.
-* Requires the GNOME ScreenCast portal.
-* Requires WiZ lights that support local UDP control.
-* WiZ lights must be reachable over the local network.
-* WiZ light discovery is not currently automatic.
-* WiZ addresses are configured directly in the Python script.
-* The current version intentionally sends the right-side color to both lights.
-* Configuration is currently stored directly in the Python source.
-* The application does not currently provide a graphical configuration interface.
-* A lost ScreenCast session requires the capture pipeline to be restarted.
-
----
-
-# Project Structure
-
-A basic AmbiWiz installation looks like:
-
-```text
-AmbiWiz/
-├── ambiwiz.py
-├── install-dependencies.sh
-└── README.md
-```
-
-## `ambiwiz.py`
-
-The main AmbiWiz application.
-
-It handles:
-
-* GNOME ScreenCast
-* D-Bus communication
-* PipeWire
-* GStreamer
-* Screen color analysis
-* Color smoothing
-* WiZ UDP communication
-
-## `install-dependencies.sh`
-
-Installs and verifies the required system dependencies.
-
-Run it with:
-
-```bash
-sudo ./install-dependencies.sh
-```
-
-## `README.md`
-
-Project documentation and configuration reference.
-
----
-
-# Quick Start
-
-For a fresh Ubuntu/Debian GNOME Wayland installation:
-
-```bash
-cd AmbiWiz
-```
-
-Make the installer executable:
-
-```bash
-chmod +x install-dependencies.sh
-```
-
-Install the dependencies:
-
-```bash
-sudo ./install-dependencies.sh
-```
-
-Make AmbiWiz executable:
-
-```bash
-chmod +x ambiwiz.py
-```
-
-Edit the WiZ addresses:
-
-```bash
-nano ambiwiz.py
-```
-
-Set:
-
-```python
-LEFT_LIGHT = "YOUR_LEFT_LIGHT_IP"
-RIGHT_LIGHT = "YOUR_RIGHT_LIGHT_IP"
-```
-
-Then start AmbiWiz:
-
-```bash
-./ambiwiz.py
-```
-
-If everything is configured correctly, the GNOME ScreenCast portal will start the capture session and the lights will begin responding to the calculated screen colors.
+When AmbiWiz starts, GNOME asks which screen to share. Pick your screen, or all screens, and click **Share**. The lights start following the screen right away.
 
 Press `Ctrl+C` to stop.
 
 ---
 
-# License
+## Step 1: Install dependencies
 
-No license is currently specified for AmbiWiz.
+```bash
+chmod +x install-dependencies.sh
+sudo ./install-dependencies.sh
+```
 
-If you intend to publish or distribute the project, add a license such as MIT, GPL-3.0, or another license appropriate for the project.
+The installer installs these packages with `apt`:
+
+```text
+python3                      python3-dbus
+python3-gi                   gir1.2-gstreamer-1.0
+gir1.2-gst-plugins-base-1.0  gstreamer1.0-pipewire
+gstreamer1.0-plugins-base    gstreamer1.0-plugins-good
+gstreamer1.0-gl              pipewire
+wireplumber                  xdg-desktop-portal
+xdg-desktop-portal-gnome
+```
+
+It then checks that Python can load D-Bus and GStreamer, and that the GStreamer elements AmbiWiz uses are present. No `pip` packages are needed.
+
+If the GPU elements (`glupload` and friends) are missing, the installer prints a warning instead of failing. AmbiWiz still runs, but fullscreen windows may freeze the lights (see [Fullscreen windows](#fullscreen-windows)).
+
+## Step 2: Find your lights
+
+`wiz_scanner.py` checks every address on your network for WiZ lights. It saves what it finds, grouped by WiZ room, in `wiz_lights.json` next to the script.
+
+First, open `wiz_scanner.py` and set `NETWORK` to your home network:
+
+```python
+NETWORK = "192.168.0.0/24"
+```
+
+If you don't know it, run `ip -4 addr` and look at your Wi-Fi or Ethernet address. For example, `inet 10.0.0.42/24` means `NETWORK = "10.0.0.0/24"`.
+
+Then run the scanner:
+
+```bash
+python3 wiz_scanner.py
+```
+
+Checking a whole `/24` network can take about two minutes. The result looks like this:
+
+```text
+Found 3 WiZ device(s).
+
+Rooms:
+
+Room 12304474: 2 light(s)
+    10.0.0.50  ESP24_SHRGB_01  MAC=cc40...
+    10.0.0.153  ESP24_SHRGB_01  MAC=cc40...
+
+Room 12304538: 1 light(s)
+    10.0.0.95  ESP24_SHRGB_01  MAC=cc40...
+```
+
+The lights don't report their room names, only room numbers. To tell rooms apart, compare the IP addresses with the WiZ app or your router's device list.
+
+Run the scanner again whenever you add a light, move one to another room, or a light's IP address changes. Reserving fixed addresses for the lights in your router avoids that last case.
+
+## Step 3: Choose the room
+
+Open `ambiwiz.py` and set `WIZ_ROOM_ID` to a room number from the scan:
+
+```python
+WIZ_ROOM_ID = 12304474  # Office
+```
+
+Every light in that room becomes part of one lighting zone, and they all show the same color.
+
+## Step 4: Run AmbiWiz
+
+```bash
+python3 ambiwiz.py
+```
+
+GNOME shows a screen-sharing dialog. Choose the screen(s) to follow and click **Share**. While AmbiWiz runs, GNOME shows its screen-sharing indicator in the top bar.
+
+A successful start ends like this:
+
+```text
+Portal returned 1 screen stream(s).
+PipeWire connection opened (fd=...).
+Screen stream: node=... position=(0, 0) size=(1920, 1080)
+Stream ...: capturing with GPU pipeline.
+
+AmbiWiz is running.
+Mode: Single illumination zone
+Lights: 2
+
+Press Ctrl+C to stop.
+```
+
+If you share several monitors, all of them are blended into the one zone color.
 
 ---
 
-# About
+## Keeping your own settings
 
-AmbiWiz is intended to be a simple, local, and lightweight way of adding ambient lighting to a Linux Wayland desktop using WiZ smart lights.
+The `.gitignore` excludes any file named `*_local.*`, along with `wiz_lights.json`. To keep your own settings out of git and avoid conflicts when you pull updates, run a personal copy:
 
-It relies on standard Linux desktop components rather than a proprietary screen-capture system, allowing the application to work directly with GNOME, PipeWire, GStreamer, and the local WiZ protocol.
+```bash
+cp ambiwiz.py ambiwiz_local.py
+python3 ambiwiz_local.py
+```
+
+After pulling a new version, copy `ambiwiz.py` again and re-apply your settings.
+
+---
+
+## Settings
+
+All settings are at the top of `ambiwiz.py`. The defaults are shown.
+
+### Lights
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `WIZ_ROOM_ID` | — | WiZ room to control (from `wiz_scanner.py`). |
+| `WIZ_PORT` | `38899` | WiZ local control port. You normally never change this. |
+
+### Response
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `UPDATE_INTERVAL` | `0.05` | Seconds between updates. `0.05` is 20 per second. |
+| `SMOOTHING` | `0.25` | How fast the lights follow the screen, from `0` to `1`. Higher is faster and `1` means no smoothing. Lower is calmer. |
+| `COLOR_THRESHOLD` | `2` | Skip sending a color if no channel changed by at least this much (0–255). Higher means fewer, steadier updates. |
+
+### Color
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `SATURATION_BOOST` | `1.60` | Makes colors more vivid. `1.0` is unchanged, `1.3` is noticeable and `2.0` is very strong. |
+| `BRIGHTNESS_BOOST` | `1.35` | Makes the lights brighter. `1.0` is unchanged and `1.6` is very bright. |
+| `MIN_BRIGHTNESS` | `0.08` | Lowest brightness for any scene that isn't black, so dark scenes still glow a little. |
+| `CONTRAST` | `1.20` | Extra contrast. `1.0` is unchanged. |
+| `DARK_THRESHOLD` | `10` | Ignore screen areas whose R+G+B is below this, such as black bars around a movie. |
+| `BLACK_SCREEN_THRESHOLD` | `8` | If the whole screen is darker than this, the lights fade to off. |
+
+### Capture
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CAPTURE_MODE` | `"auto"` | `"auto"` uses the GPU pipeline and falls back to the CPU one if it fails. `"gpu"` and `"cpu"` force one pipeline. |
+| `CURSOR_MODE` | `1` | `1` hides the mouse cursor in the capture. `2` includes it. |
+| `SAMPLE_COLUMNS`, `SAMPLE_ROWS` | `32`, `18` | The screen is shrunk to this many pixels before its color is measured. Keep the screen's shape, for example 16×9 or 64×36. |
+| `RESTART_DELAY` | `1.0` | Seconds to wait before rebuilding a capture pipeline after an error. |
+| `STALL_WARNING` | `10.0` | Print a message if a screen sends no frames for this many seconds. |
+
+### Tuning tips
+
+* **Lights lag behind the screen:** raise `SMOOTHING` (for example `0.5`) or lower `UPDATE_INTERVAL`.
+* **Lights flicker or jump:** lower `SMOOTHING` (for example `0.1`) or raise `COLOR_THRESHOLD` (for example `5`).
+* **Colors look washed out:** raise `SATURATION_BOOST`.
+* **Lights too dim:** raise `BRIGHTNESS_BOOST` or `MIN_BRIGHTNESS`.
+* **Lights go off in dark scenes:** lower `BLACK_SCREEN_THRESHOLD`.
+
+---
+
+## How it works
+
+```text
+Screen ──► GNOME screen-sharing portal ──► PipeWire
+       ──► GStreamer: shrink screen to 32×18 pixels (on the GPU)
+       ──► Python: average the pixels, skipping near-black ones
+       ──► boost saturation / brightness / contrast
+       ──► smooth the change
+       ──► same RGB color sent over UDP to every light in the room
+```
+
+1. **Capture.** AmbiWiz asks GNOME for permission to record the screen. GNOME delivers the frames through PipeWire.
+2. **Shrink.** GStreamer scales each frame down to `SAMPLE_COLUMNS × SAMPLE_ROWS`, so each tiny pixel is the average of a patch of screen. With the GPU pipeline this happens on the graphics card, and only about 2 KB per frame is copied to the CPU.
+3. **Measure.** The near-black pixels are dropped and the rest are averaged into one color. With several screens, their colors are averaged too.
+4. **Enhance and smooth.** The color is made more vivid and brighter, then eased toward the new value so changes look smooth.
+5. **Send.** If the color changed enough, a WiZ `setPilot` command goes to every light in the room over UDP:
+
+   ```json
+   {"method": "setPilot", "params": {"state": true, "r": 255, "g": 80, "b": 0}}
+   ```
+
+If a capture pipeline fails, AmbiWiz rebuilds it after `RESTART_DELAY` seconds.
+
+---
+
+## Troubleshooting
+
+### Fullscreen windows
+
+When a window goes fullscreen, GNOME can send it straight to the display and skip its usual compositing. During that time, screen capture only delivers frames in GPU memory. The GPU pipeline handles this, which is why AmbiWiz defaults to it.
+
+If the lights freeze whenever something is fullscreen and resume when you leave fullscreen:
+
+1. Check the startup output. It should say `capturing with GPU pipeline`.
+2. If it says `falling back to CPU capture`, the error printed just before it gives the reason. Make sure `gstreamer1.0-gl` is installed (`sudo ./install-dependencies.sh`).
+3. Make sure `CAPTURE_MODE` is not set to `"cpu"`.
+
+### "no new frames for 10s"
+
+GNOME only sends a new frame when something on the screen changes, so this message is normal on a still desktop. It means something is wrong only if it appears while the screen is clearly moving. In that case, see [Fullscreen windows](#fullscreen-windows).
+
+### `ERROR starting screen capture`
+
+You probably clicked **Cancel** in the sharing dialog, or the session isn't Wayland. Check:
+
+```bash
+echo "$XDG_SESSION_TYPE"                       # should print: wayland
+systemctl --user status pipewire wireplumber
+systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome
+```
+
+If a service isn't running, log out and back in, or reboot.
+
+### `WiZ inventory file not found`
+
+Run `python3 wiz_scanner.py` first. It writes `wiz_lights.json` next to the scripts.
+
+### `No lights found in WiZ room ...`
+
+`WIZ_ROOM_ID` doesn't match any room in `wiz_lights.json`. Run the scanner again and copy a room number from its output.
+
+### The scanner finds no lights
+
+* `NETWORK` in `wiz_scanner.py` doesn't match your network (see [Step 2](#step-2-find-your-lights)).
+* The lights are switched off at the wall.
+* The router isolates Wi-Fi devices from each other ("client isolation" or "AP isolation"), or a firewall blocks UDP port 38899.
+
+### The lights don't react
+
+* Check that the computer can reach a light, for example with `ping 10.0.0.50`.
+* A light's IP address may have changed. Run the scanner again.
+* Local control may be turned off for the lights in the WiZ app. Look under **Settings → Security → Allow local communication**.
+
+### Python can't load D-Bus or GStreamer
+
+```bash
+python3 -c "import dbus; print('D-Bus OK')"
+python3 -c "import gi; gi.require_version('Gst','1.0'); gi.require_version('GstVideo','1.0'); from gi.repository import Gst, GstVideo; print('GStreamer OK')"
+```
+
+If either command fails, run `sudo ./install-dependencies.sh` again.
+
+---
+
+## Running at login (optional)
+
+You can start AmbiWiz automatically as a user service. GNOME still shows the screen-sharing dialog every time it starts, so you have to click **Share** after each login.
+
+Create `~/.config/systemd/user/ambiwiz.service`:
+
+```ini
+[Unit]
+Description=AmbiWiz ambient lighting
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /path/to/AmbiWiz/ambiwiz.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+Replace `/path/to/AmbiWiz/ambiwiz.py` with the real path, or point it at your `ambiwiz_local.py`. Then run:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now ambiwiz.service
+journalctl --user -u ambiwiz.service -f   # live log
+```
+
+To stop it, run `systemctl --user stop ambiwiz.service`. To stop it starting at login, run `systemctl --user disable ambiwiz.service`.
+
+---
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `ambiwiz.py` | The ambient lighting program. |
+| `wiz_scanner.py` | Finds WiZ lights on your network and writes `wiz_lights.json`. |
+| `wiz_lights.json` | Lights and rooms found by the scanner. Not tracked by git. Delete it and scan again to refresh. |
+| `install-dependencies.sh` | Installs and checks the system packages. |
+
+## Limitations
+
+* GNOME on Wayland only.
+* One zone: all lights in the chosen room show the same color.
+* The screen-sharing dialog appears on every start.
+* Rooms are shown as numbers, because the lights don't report room names.
+* Settings are edited in the Python file. There is no settings window.
+
+## Privacy
+
+Screen frames are processed in memory on your computer and thrown away straight after. Only the resulting RGB values are sent, and only to the lights on your local network.
+
+## License
+
+No license has been chosen yet. Add one, such as MIT or GPL-3.0, before distributing the project.
